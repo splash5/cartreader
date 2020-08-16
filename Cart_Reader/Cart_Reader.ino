@@ -141,6 +141,8 @@ typedef enum COLOR_T {
 #define mode_WS 21
 #define mode_NGP 22
 
+#define mode_GBA_AGBSPro 100
+
 // optimization-safe nop delay
 #define NOP __asm__ __volatile__ ("nop\n\t")
 
@@ -1635,6 +1637,11 @@ void loop() {
 #ifdef enable_NGP
   else if (mode == mode_NGP) {
     ngpMenu();
+  }
+#endif
+#ifdef enable_GBX
+  else if (mode == mode_GBA_AGBSPro) {
+    gbaAGBSProMenu();
   }
 #endif
   else {

@@ -21,7 +21,8 @@ static const char GBAMenuItem3[] PROGMEM = "Write Save";
 static const char GBAMenuItem4[] PROGMEM = "Force Savetype";
 static const char GBAMenuItem5[] PROGMEM = "Flash Repro";
 static const char GBAMenuItem6[] PROGMEM = "Reset";
-static const char* const menuOptionsGBA[] PROGMEM = {GBAMenuItem1, GBAMenuItem2, GBAMenuItem3, GBAMenuItem4, GBAMenuItem5, GBAMenuItem6};
+static const char GBAMenuItem7[] PROGMEM = "AGBS Pro(+G)";
+static const char* const menuOptionsGBA[] PROGMEM = {GBAMenuItem1, GBAMenuItem2, GBAMenuItem3, GBAMenuItem4, GBAMenuItem5, GBAMenuItem7, GBAMenuItem6};
 
 // Rom menu
 static const char GBARomItem1[] PROGMEM = "1MB";
@@ -480,6 +481,22 @@ void gbaMenu() {
       break;
 
     case 5:
+      if (setup_AGBSPro()) {
+        mode = mode_GBA_AGBSPro;
+      }
+      else {
+        display_Clear();
+        print_Error(F("AGBSPro cart not found"), false);
+        println_Msg(F(""));
+        println_Msg(F(""));
+        println_Msg(F(""));
+        println_Msg(F("Press Button..."));
+        display_Update();
+        wait();
+      }
+      break;
+
+    default:
       resetArduino();
       break;
   }

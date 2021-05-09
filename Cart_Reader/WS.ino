@@ -25,6 +25,26 @@
 #include "options.h"
 #ifdef enable_WS
 
+struct FlashChip
+{
+  union
+  {
+    struct
+    {
+      uint16_t device;
+      uint16_t manufacture;
+    } id;
+    
+    uint32_t full_id;
+  };
+
+  uint32_t size;
+
+//  void reset_chip();
+//  void erase_ws_bank(uint8_t bank);
+//  void program(uint32_t addr, uint32_t length, const uint8_t *buffer);
+};
+
 /******************************************
   Menu
 *****************************************/
@@ -32,8 +52,14 @@ static const char wsMenuItem1[] PROGMEM = "Read Rom";
 static const char wsMenuItem2[] PROGMEM = "Read Save";
 static const char wsMenuItem3[] PROGMEM = "Write Save";
 static const char wsMenuItem4[] PROGMEM = "Reset";
-static const char wsMenuItem5[] PROGMEM = "Write WitchOS";
+static const char wsMenuItem5[] PROGMEM = "Flash...";
+
+static const char wsFlashMenuItem1[] PROGMEM = "Write WitchOS";
+static const char wsFlashMenuItem2[] PROGMEM = "Write!";
+static const char wsFlashMenuItem3[] PROGMEM = "Back";
+
 static const char* const menuOptionsWS[] PROGMEM = {wsMenuItem1, wsMenuItem2, wsMenuItem3, wsMenuItem4, wsMenuItem5};
+static const char* const menuOptionsWSFlash[] PROGMEM = {wsFlashMenuItem3, wsFlashMenuItem2, wsFlashMenuItem1};
 
 static const uint8_t wwLaunchCode[] PROGMEM = { 0xea, 0x00, 0x00, 0x00, 0xe0, 0x00, 0xff, 0xff };
 
@@ -41,7 +67,9 @@ static uint8_t wsGameOrientation = 0;
 static uint8_t wsGameHasRTC = 0;
 static uint16_t wsGameChecksum = 0;
 static uint8_t wsEepromShiftReg[2];
+
 static boolean wsWitch = false;
+static struct FlashChip wsFlashChip = { 0x00000000 };
 
 void setup_WS()
 {
@@ -79,17 +107,37 @@ void setup_WS()
   //  if (getCartInfo_WS() != 0xea)
   //    print_Error(F("Rom header read error"), true);
 
+  display_Clear();
   println_Msg(F("Initializing..."));
   display_Update();
 
-  do {
-    unlockMMC2003_WS();
+  while (!unlockMMC2003_WS());
+
+  println_Msg(F("MMC unlocked..."));
+  display_Update();
+
+  wsFlashChip = checkFlashChip();
+
+  updateCartInfo();
+}
+
+void updateCartInfo()
+{
+  if (!headerCheck())
+  {
+    println_Msg(F("Press button to\nskip header checking"));
+    display_Update();
+    
+    do
+    {
+      if (checkButton())
+        break;
+      
+    } while(!headerCheck());
   }
-  while (!headerCheck());
 
   getCartInfo_WS();
-
-  showCartInfo_WS();
+  showCartInfo_WS();  
 }
 
 boolean headerCheck() {
@@ -116,9 +164,58 @@ boolean headerCheck() {
   return false;
 }
 
+struct FlashChip checkFlashChip()
+{  
+  dataIn_WS();
+  uint8_t bank = readByte_WSPort(0xc3);
+  uint16_t manufacture_id, device_id;
+  struct FlashChip chip = { 0x00000000 };
+
+  dataOut_WS();
+  writeByte_WSPort(0xc3, 0x00);
+  
+  // check flashchip
+  // for witch, should be a MBM29DL400TC or MBM29LV400TC
+  writeWord_WS(0x30aaa, 0xaaaa);
+  writeWord_WS(0x30555, 0x5555);
+  writeWord_WS(0x30aaa, 0x9090);
+
+  dataIn_WS();
+  chip.id.manufacture = readWord_WS(0x30000);
+  chip.id.device = readWord_WS(0x30002);
+
+  dataOut_WS();
+  switch (chip.full_id)
+  {
+    case 0x0004220c:  // MBM29DL400TC
+    case 0x000422b9:  // MBM29LV400TC
+    {
+      chip.size = 4 * 131072;
+      writeWord_WS(0x30000, 0xf0f0);
+      break;
+    }
+    // E28FxxxJ3A
+    case 0x00890016:
+    case 0x00890017:
+    case 0x00890018:
+    {
+      chip.size = (32 * 131072) << (chip.id.device - 0x0016);
+      writeWord_WS(0x30000, 0x00ff);
+      break;
+    }
+    default: chip.full_id = 0x00000000; break;
+  }
+
+  // restore bank
+  writeByte_WSPort(0xc3, bank);
+  dataIn_WS();
+
+  return chip;
+}
+
 void wsMenu()
 {
-  uint8_t mainMenu = (wsWitch ? 5 : 4);
+  uint8_t mainMenu = (wsFlashChip.full_id ? 5 : 4);
 
   convertPgm(menuOptionsWS, mainMenu);
   mainMenu = question_box(F("WS Menu"), menuOptions, mainMenu, 0);
@@ -173,10 +270,11 @@ void wsMenu()
         break;
       }
     case 4:
-      {
-        writeWitchOS_WS();
-        break;
-      }
+    {
+      // flash menu
+      wsFlashMenu();
+      return;
+    }
     default:
       {
         // reset
@@ -185,11 +283,32 @@ void wsMenu()
       }
   }
 
-  println_Msg(F(""));
-  println_Msg(F("Press Button..."));
+  println_Msg(F("\nPress Button..."));
 
   display_Update();
   wait();
+}
+
+void wsFlashMenu()
+{
+  uint8_t selection = (wsWitch ? 3 : 2);
+  convertPgm(menuOptionsWSFlash, selection);
+  selection = question_box(F("WS Flash Menu"), menuOptions, selection, 0);
+
+  switch (selection)
+  {
+    case 1:
+    {
+      writeFlash_WS();
+      updateCartInfo();
+      break;
+    }
+    case 2:
+    {
+      writeWitchOS_WS();
+      break;
+    }
+  }
 }
 
 uint8_t getCartInfo_WS()
@@ -218,6 +337,8 @@ uint8_t getCartInfo_WS()
     // games missing 'COLOR' flag
     case 0x26db:  // SQRC01
     case 0xbfdf:  // SUMC07
+    case 0x50ca:  // BANC09
+    case 0x9238:  // BANC0E
       {
         sdBuffer[7] |= 0x01;
         break;
@@ -247,18 +368,10 @@ uint8_t getCartInfo_WS()
           if (readWord_WS(0xfff5e) == 0x006c && readWord_WS(0xfff60) == 0x5b1b)
           {
             // check flashchip
-            // should be a MBM29DL400TC
-            dataOut_WS();
-            writeWord_WS(0x80aaa, 0xaaaa);
-            writeWord_WS(0x80555, 0x5555);
-            writeWord_WS(0x80aaa, 0x9090);
-
-            dataIn_WS();
-            if (readWord_WS(0x80000) == 0x0004 && readWord_WS(0x80002) == 0x220c)
+            // should be a MBM29DL400TC or MBM29LV400TC
+            if (wsFlashChip.full_id == 0x0004220c || wsFlashChip.full_id == 0x000422b9)            
               wsWitch = true;
 
-            dataOut_WS();
-            writeWord_WS(0x80000, 0xf0f0);
             dataIn_WS();
 
             // 7AC003
@@ -380,6 +493,13 @@ void showCartInfo_WS()
 
   print_Msg(F("Checksum: "));
   println_Msg(checksumStr);
+
+  if (wsFlashChip.full_id != 0)
+  {
+    print_Msg(F("FlashChip: "));
+    print_Msg_PaddedHex32(wsFlashChip.full_id);
+    println_Msg(F(""));
+  }
 
   println_Msg(F("Press Button..."));
   display_Update();
@@ -857,6 +977,79 @@ void writeEEPROM_WS()
   }
 }
 
+void writeFlash_WS()
+{
+  filePath[0] = 0;
+  sd.chdir("/");
+  fileBrowser(F("Select a file"));
+  snprintf(filePath, FILEPATH_LENGTH, "%s/%s", filePath, fileName);
+
+  display_Clear();
+
+  if (!myFile.open(filePath, O_READ))
+  {
+    print_Error(F("File doesn't exist"), false);
+    return;
+  }
+
+  uint32_t file_length = myFile.fileSize();
+
+  if (file_length > wsFlashChip.size)
+  {
+    print_Error(F("File size too large!"), false);
+    myFile.close();
+    return;
+  }
+
+  print_Msg(F("Flashing "));
+  print_Msg(filePath);
+  println_Msg(F("..."));
+  display_Update();
+
+  uint32_t i, j, k, progress = 0;
+  uint8_t bank, b = (file_length < 65536 ? 0 : (file_length >> 16) - 1);
+  draw_progressbar(0, file_length);
+
+  do
+  {
+    bank = 255 - b;
+
+    if ((bank & 1) == 0)
+      eraseFlash_WS(bank);  
+
+    for (i = 0; i < 65536; i += 512)
+    {
+      // blink LED
+      if ((i & 0x2000))
+        PORTB ^= (1 << 4);
+
+      // read file
+      myFile.read(sdBuffer, 512);
+
+      for (j = 0; j < 512; j += 32)
+      {
+        // wrtie flash buffer and flash
+        bufferedProgramFlash_WS(bank, i + j, (uint16_t*)(sdBuffer + j), (32 >> 1));
+      }
+    }
+
+    progress += 65536;
+    draw_progressbar(progress, file_length);
+    
+  } while (b-- != 0x00);
+
+  // back to read array mode
+  dataOut_WS();
+  writeByte_WSPort(0xc3, 0xff);
+  writeWord_WS(0x30000, 0x00ff);
+
+  println_Msg(F("Done\n\nPress Button..."));
+  display_Update();
+  
+  myFile.close();
+  wait();
+}
+
 void writeWitchOS_WS()
 {
   // make sure that OS sectors not protected
@@ -985,6 +1178,57 @@ void eraseWitchFlashSector_WS(uint32_t sector_addr)
 
   dataIn_WS();
   while ((readWord_WS(sector_addr) & 0x0080) == 0x0000);
+}
+
+void bufferedProgramFlash_WS(uint8_t bank, uint32_t addr, uint16_t *data, uint32_t count)
+{
+  if (count == 0)
+    return;
+  
+  // write block addr with 0xe8
+  dataOut_WS();
+  writeByte_WSPort(0xc3, (bank & 0xfe));
+  writeWord_WS(0x30000, 0x00e8);
+
+  // wait for buffer ready
+  dataIn_WS();
+  while ((readWord_WS(0x30000) & 0x0080) == 0x0000);
+
+  // how many words to write
+  dataOut_WS();
+  writeWord_WS(0x30000, count - 1);
+
+  // start filling buffer
+  writeByte_WSPort(0xc3, bank);
+  do
+  {
+    writeWord_WS(0x30000 + addr, *data);
+    addr += 2;
+    data++;
+  } while (--count > 0);
+
+  // do flashing
+  writeByte_WSPort(0xc3, (bank & 0xfe));
+  writeWord_WS(0x30000, 0x00d0);
+
+  dataIn_WS();
+  while ((readWord_WS(0x30000) & 0x0080) == 0x0000);
+}
+
+void eraseFlash_WS(uint8_t bank)
+{
+  // block addr on even bank
+  if ((bank & 1))
+    return;
+
+  dataOut_WS();
+  writeByte_WSPort(0xc3, bank);
+  
+  writeWord_WS(0x30000, 0x0020);
+  writeWord_WS(0x30000, 0x00d0);
+
+  dataIn_WS();
+  while ((readWord_WS(0x30000) & 0x0080) == 0x0000);
 }
 
 boolean compareChecksum_WS(const char *wsFilePath)
